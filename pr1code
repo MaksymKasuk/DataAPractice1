@@ -1,0 +1,339 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from pathlib import Path
+from scipy.stats import linregress
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.graphics.tsaplots import plot_acf
+
+# ============================================================
+# Лабораторна робота
+# Тема: Аналіз якості машинного перекладу тексту
+# Основний часовий ряд: BLEU Score
+# Дані навчальні / змодельовані.
+# ============================================================
+
+OUTPUT_DIR = Path("translation_quality_results")
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+np.random.seed(42)
+
+# 1. Формування даних: 48 місяців
+# BLEU і chrF: більше = краще; TER: менше = краще.
+dates = pd.date_range("2023-01-01", periods=48, freq="MS")
+t = np.arange(len(dates))
+
+bleu = np.clip(
+    58 + 0.42 * t
+    + 2.4 * np.sin(2 * np.pi * t / 12)
+    + 0.8 * np.cos(2 * np.pi * t / 6)
+    + np.random.normal(0, 1.25, len(t)),
+    0, 100
+)
+
+chrf = np.clip(
+    65 + 0.32 * t
+    + 1.8 * np.sin(2 * np.pi * t / 12 + 0.4)
+    + np.random.normal(0, 1.0, len(t)),
+    0, 100
+)
+
+ter = np.clip(
+    39 - 0.30 * t
+    - 1.3 * np.sin(2 * np.pi * t / 12)
+    + np.random.normal(0, 1.0, len(t)),
+    0, 100
+)
+
+df = pd.DataFrame({
+    "date": dates,
+    "BLEU": np.round(bleu, 2),
+    "chrF": np.round(chrf, 2),
+    "TER": np.round(ter, 2),
+}).set_index("date")
+
+df.to_csv(OUTPUT_DIR / "translation_quality_data.csv", encoding="utf-8-sig")
+
+print("=" * 70)
+print("АНАЛІЗ ЯКОСТІ МАШИННОГО ПЕРЕКЛАДУ ТЕКСТУ")
+print("=" * 70)
+print("\nПерші 12 спостережень:")
+print(df.head(12).to_string())
+
+# 2. Вихідний часовий ряд BLEU
+plt.figure(figsize=(11, 5))
+plt.plot(df.index, df["BLEU"], marker="o", linewidth=1.5)
+plt.title("Динаміка якості машинного перекладу тексту")
+plt.xlabel("Період тестування")
+plt.ylabel("BLEU Score, балів")
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "01_bleu_time_series.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 3. Лінійна оцінка тренду
+x = np.arange(len(df))
+slope, intercept, r_value, p_value, std_err = linregress(x, df["BLEU"])
+df["Linear trend"] = intercept + slope * x
+
+print("\nЛІНІЙНА ОЦІНКА ТРЕНДУ")
+print(f"Нахил тренду: {slope:.3f} BLEU бала/місяць")
+print(f"R²: {r_value ** 2:.3f}")
+print(f"p-value: {p_value:.8f}")
+
+if p_value < 0.05 and slope > 0:
+    print("Висновок: спостерігається статистично значущий висхідний тренд якості перекладу.")
+elif p_value < 0.05 and slope < 0:
+    print("Висновок: спостерігається статистично значущий низхідний тренд якості перекладу.")
+else:
+    print("Висновок: статистично значущий лінійний тренд не виявлено.")
+
+# Наочне подання побудованої лінійної моделі: y = intercept + slope * t
+plt.figure(figsize=(11, 5))
+plt.plot(df.index, df["BLEU"], "o-", color="steelblue", label="Фактичний BLEU")
+plt.plot(
+    df.index,
+    df["Linear trend"],
+    "--",
+    color="crimson",
+    linewidth=2.2,
+    label=f"Лінійний тренд: y = {intercept:.2f} + {slope:.3f}·t",
+)
+plt.title("Побудова лінійної моделі тренду BLEU")
+plt.xlabel("Період тестування")
+plt.ylabel("BLEU Score, балів")
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "02_bleu_linear_trend_model.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 4. Критерій висхідних і низхідних серій
+# Поширена реалізація критерію для часових рядів.
+differences = np.diff(df["BLEU"].values)
+signs = np.sign(differences)
+signs = signs[signs != 0]
+
+runs = []
+if len(signs) > 0:
+    current_sign = signs[0]
+    current_length = 1
+    for sign in signs[1:]:
+        if sign == current_sign:
+            current_length += 1
+        else:
+            runs.append(current_length)
+            current_sign = sign
+            current_length = 1
+    runs.append(current_length)
+
+number_of_runs = len(runs)
+max_run_length = max(runs) if runs else 0
+n = len(df)
+
+lower_runs_limit = (
+    (2 * n - 1) / 3
+    - 1.96 * np.sqrt((16 * n - 29) / 90)
+)
+
+if n <= 26:
+    critical_max_run = 5
+elif n <= 153:
+    critical_max_run = 6
+elif n <= 1170:
+    critical_max_run = 7
+else:
+    critical_max_run = 8
+
+print("\nКРИТЕРІЙ ВИСХІДНИХ І НИЗХІДНИХ СЕРІЙ")
+print(f"Кількість спостережень n: {n}")
+print(f"Кількість серій: {number_of_runs}")
+print(f"Нижня допустима межа числа серій: {lower_runs_limit:.2f}")
+print(f"Максимальна довжина серії: {max_run_length}")
+print(f"Критична максимальна довжина серії: {critical_max_run}")
+
+trend_by_runs = number_of_runs < lower_runs_limit or max_run_length > critical_max_run
+print(
+    "Висновок за критерієм серій: у часовому ряду є тенденція."
+    if trend_by_runs
+    else "Висновок за критерієм серій: виражену тенденцію не виявлено."
+)
+
+# Візуалізація висхідних (+1) та низхідних (-1) серій змін BLEU.
+# Кожен кольоровий відрізок відповідає одній серії послідовних змін.
+run_segments = []
+start = 0
+for run_number, run_length in enumerate(runs, start=1):
+    end = start + run_length
+    run_segments.append((run_number, start, end, int(signs[start]), run_length))
+    start = end
+
+fig, ax = plt.subplots(figsize=(12, 5))
+for run_number, start, end, sign, run_length in run_segments:
+    color = "forestgreen" if sign > 0 else "firebrick"
+    label = "Висхідна серія" if sign > 0 else "Низхідна серія"
+    ax.plot(
+        df.index[start + 1:end + 1],
+        np.full(run_length, sign),
+        "o-",
+        color=color,
+        linewidth=3,
+        markersize=5,
+        label=label if run_number <= 2 else None,
+    )
+    midpoint = start + run_length // 2 + 1
+    ax.annotate(
+        str(run_number),
+        (df.index[midpoint], sign),
+        xytext=(0, 9 if sign > 0 else -15),
+        textcoords="offset points",
+        ha="center",
+        fontsize=8,
+    )
+
+ax.axhline(0, color="black", linewidth=1)
+ax.set_yticks([-1, 1], ["Низхідна зміна", "Висхідна зміна"])
+ax.set_title("Критерій висхідних і низхідних серій для BLEU")
+ax.set_xlabel("Період завершення зміни")
+ax.set_ylabel("Напрям зміни")
+ax.text(
+    0.01,
+    0.03,
+    f"Серій: {number_of_runs}; максимальна довжина: {max_run_length}",
+    transform=ax.transAxes,
+    bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.85},
+)
+handles, labels = ax.get_legend_handles_labels()
+unique = dict(zip(labels, handles))
+ax.legend(unique.values(), unique.keys(), loc="upper right")
+ax.grid(True, alpha=0.25)
+fig.tight_layout()
+fig.savefig(OUTPUT_DIR / "03_bleu_ascending_descending_runs.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 5. Адитивна декомпозиція: BLEU = Trend + Seasonal + Residual
+decomposition = seasonal_decompose(
+    df["BLEU"],
+    model="additive",
+    period=12,
+    extrapolate_trend="freq"
+)
+
+df["Trend"] = decomposition.trend
+df["Seasonal"] = decomposition.seasonal
+df["Residual"] = decomposition.resid
+
+df.to_csv(OUTPUT_DIR / "translation_quality_decomposition.csv", encoding="utf-8-sig")
+
+# Комплексна візуалізація адитивного розкладення: observed = trend + seasonal + residual.
+fig = decomposition.plot()
+fig.set_size_inches(12, 9)
+fig.suptitle("Адитивне розкладення часового ряду BLEU", y=0.98)
+for ax in fig.axes:
+    ax.grid(True, alpha=0.25)
+fig.tight_layout(rect=[0, 0, 1, 0.96])
+fig.savefig(OUTPUT_DIR / "04_bleu_time_series_decomposition.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 6. Тренд
+plt.figure(figsize=(11, 5))
+plt.plot(df.index, df["Trend"], linewidth=2)
+plt.title("Тренд якості машинного перекладу")
+plt.xlabel("Період тестування")
+plt.ylabel("Тренд BLEU")
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "05_bleu_trend.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 7. Сезонна складова
+plt.figure(figsize=(11, 5))
+plt.plot(df.index, df["Seasonal"], linewidth=1.5)
+plt.axhline(0, linewidth=1)
+plt.title("Сезонна складова якості машинного перекладу")
+plt.xlabel("Період тестування")
+plt.ylabel("Сезонна складова BLEU")
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "06_bleu_seasonal.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 8. Випадкова складова
+plt.figure(figsize=(11, 5))
+plt.plot(df.index, df["Residual"], marker="o", linewidth=1)
+plt.axhline(0, linewidth=1)
+plt.title("Випадкова складова якості машинного перекладу")
+plt.xlabel("Період тестування")
+plt.ylabel("Залишок BLEU")
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "07_bleu_residual.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 9. Автокореляційна функція випадкової компоненти
+residual = df["Residual"].dropna()
+plt.figure(figsize=(10, 5))
+acf_lags = min(20, len(residual) - 1)
+plot_acf(residual, lags=acf_lags, alpha=0.05)
+plt.title("Автокореляційна функція випадкової складової")
+plt.xlabel("Лаг")
+plt.ylabel("Автокореляція")
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "08_bleu_residual_acf.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 10. Додаткове порівняння BLEU та chrF
+plt.figure(figsize=(11, 5))
+plt.plot(df.index, df["BLEU"], label="BLEU", linewidth=1.5)
+plt.plot(df.index, df["chrF"], label="chrF", linewidth=1.5)
+plt.title("Динаміка метрик якості машинного перекладу")
+plt.xlabel("Період тестування")
+plt.ylabel("Оцінка, балів")
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "06_bleu_chrf_comparison.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# TER має протилежний напрям: менше = краще
+plt.figure(figsize=(11, 5))
+plt.plot(df.index, df["TER"], marker="o", linewidth=1.5)
+plt.title("Динаміка TER машинного перекладу")
+plt.xlabel("Період тестування")
+plt.ylabel("TER, %")
+plt.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(OUTPUT_DIR / "07_ter_time_series.png", dpi=180, bbox_inches="tight")
+plt.show()
+
+# 11. Підсумок
+first_mean = df["BLEU"].iloc[:12].mean()
+last_mean = df["BLEU"].iloc[-12:].mean()
+change = last_mean - first_mean
+
+print("\n" + "=" * 70)
+print("ПІДСУМКОВІ РЕЗУЛЬТАТИ")
+print("=" * 70)
+print(f"Середній BLEU за перші 12 місяців: {first_mean:.2f}")
+print(f"Середній BLEU за останні 12 місяців: {last_mean:.2f}")
+print(f"Зміна середнього BLEU: {change:+.2f} бала")
+
+print("""
+Висновок:
+Досліджено часовий ряд, який характеризує якість машинного
+перекладу тексту за показником BLEU. Графічний аналіз та
+лінійна модель дозволяють оцінити загальну тенденцію зміни
+якості перекладу. Адитивна декомпозиція розділяє часовий ряд
+на трендову, сезонну та випадкову складові.
+
+Тренд відображає довгострокову зміну якості перекладача.
+Сезонна компонента характеризує періодичні коливання
+результатів тестування, а випадкова компонента містить
+нерегулярні відхилення, які не пояснюються трендом і сезонністю.
+
+Автокореляційна функція залишків використовується для
+оцінювання того, чи залишилась у випадковій компоненті
+виражена часова залежність.
+""")
+
+print(f"Результати збережено у папці: {OUTPUT_DIR.resolve()}")
